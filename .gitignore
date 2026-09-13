@@ -1,0 +1,13 @@
+# Dépôt GitHub « alnatea-base » : seuls les fichiers listés ci-dessous sont publiés.
+# Tout le reste du dossier Site Shopify (pipelines images, thème, rapports, journaux, données) reste local.
+*
+!.gitignore
+!README.md
+!.github/
+!.github/workflows/
+!.github/workflows/*.yml
+!lib/
+!lib/env.mjs
+!lib/baselinker.mjs
+!commandes/
+!commandes/commande-fournisseur.mjs
