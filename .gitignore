@@ -10,4 +10,7 @@
 !lib/env.mjs
 !lib/baselinker.mjs
 !commandes/
+!commandes/lib-commandes.mjs
 !commandes/commande-fournisseur.mjs
+!commandes/stock-check.mjs
+!commandes/reception-partielle.mjs

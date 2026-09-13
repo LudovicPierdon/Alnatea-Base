@@ -1,18 +1,18 @@
-# Commande fournisseur automatique — exécution planifiée sur les serveurs GitHub (PC éteint ou non).
-# Toutes les 30 minutes : node commandes/commande-fournisseur.mjs <arguments>.
-# Les arguments planifiés viennent de la variable de dépôt ARGUMENTS_PLANIFIES (Settings → Secrets and variables →
+# Réception partielle — exécution planifiée sur les serveurs GitHub (PC éteint ou non).
+# Toutes les 30 minutes : node commandes/reception-partielle.mjs <arguments>.
+# Les arguments planifiés viennent de la variable de dépôt ARGUMENTS_RECEPTION_PARTIELLE (Settings → Secrets and variables →
 # Actions → Variables) : vide = simulation, « --appliquer » = écriture dans Base. Le jeton BASELINKER_TOKEN est un
 # secret de dépôt (même page, onglet Secrets) : il n'apparaît jamais dans les journaux.
-# Lancement manuel possible depuis l'onglet Actions (« Run workflow ») avec des arguments libres, ex. « --rattrapage ».
-name: Commande fournisseur
+# Lancement manuel possible depuis l'onglet Actions (« Run workflow ») avec des arguments libres.
+name: Réception partielle
 
 on:
   schedule:
-    - cron: "0,30 * * * *"
+    - cron: "5,35 * * * *"
   workflow_dispatch:
     inputs:
       arguments:
-        description: "Options du script (vide = simulation ; --appliquer ; --rattrapage ; --jours=N)"
+        description: "Options du script (vide = simulation ; --appliquer ; --commande=ID ; --jours=N)"
         required: false
         default: ""
 
@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  commande-fournisseur:
+  reception-partielle:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,7 +34,7 @@ jobs:
         env:
           BASELINKER_TOKEN: ${{ secrets.BASELINKER_TOKEN }}
           BASELINKER_INVENTORY_ID: "27452"
-          ARGUMENTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.arguments || vars.ARGUMENTS_PLANIFIES }}
+          ARGUMENTS: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.arguments || vars.ARGUMENTS_RECEPTION_PARTIELLE }}
         run: |
           echo "Arguments : '${ARGUMENTS}'"
-          node commandes/commande-fournisseur.mjs ${ARGUMENTS}
+          node commandes/reception-partielle.mjs ${ARGUMENTS}
