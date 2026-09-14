@@ -17,20 +17,29 @@
 //   - Un bon annulé sans avoir été envoyé n'est pas un échec : la quantité est simplement remise sur le brouillon
 //     courant, sans compter de tentative.
 //   - Chaque commande client suit ce cycle complet : aucun produit n'est écarté d'office pour ses échecs passés.
+//   - Délai dépassé (décision du 2026-09-14) : une ligne d'une commande confirmée depuis plus de N jours (défaut 60,
+//     --delai=N, 0 = désactivé) et toujours non couverte par le stock est un échec définitif, quel que soit l'état de
+//     son bon (jamais commandée, brouillon jamais envoyé, bon envoyé jamais reçu, bon clos) et sans seconde chance.
+//     Elle est isolée pour remboursement ligne par ligne comme ci-dessus : une commande mixte garde ses lignes reçues
+//     et part. Sa quantité est retirée du brouillon si le bon ne l'est pas encore ; si le bon est envoyé, le surplus
+//     à l'arrivée est signalé. Le manquant d'un produit est attribué aux commandes les plus récentes d'abord (même
+//     convention que stock-check.mjs) : une commande ancienne n'est en retard que si le stock ne la couvre vraiment pas.
+//     Les commandes « En stock » (tout couvert) ne sont jamais concernées.
 //   Seul changement de statut automatique : « A rembourser ».
 //
-// Usage : node commandes/reception-partielle.mjs [--appliquer] [--jours=90] [--commande=ID] [--produit=ID]
+// Usage : node commandes/reception-partielle.mjs [--appliquer] [--jours=90] [--delai=60] [--commande=ID] [--produit=ID]
 //   sans option     simulation : affiche les échecs détectés et ce qui serait fait, n'écrit rien
 //   --appliquer     écrit dans Base (brouillons, commandes de remboursement, lignes, statuts, trace, commentaires)
 //   --jours=N       fenêtre de lecture des commandes clients (défaut 90 jours, maximum de l'API)
+//   --delai=N       délai (jours depuis la confirmation) au-delà duquel une ligne non reçue est remboursée (défaut 60, 0 = jamais)
 //   --commande=ID   ne traite que cette commande client
 //   --produit=ID    ne traite que ce produit Base
 // Journal : commandes/journal/reception-partielle-AAAA-MM.log
 import { ST, NOM_STATUT_BON, STATUTS_DEMANDE, PO_CLOS, options, creerJournal, lireTrace, chargerCommandes, resumeStatuts, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan, dateCourte } from "./lib-commandes.mjs";
 
-const { APPLIQUER, JOURS, SEULE, PRODUIT } = options(undefined, { jours: 90 });
+const { APPLIQUER, JOURS, SEULE, PRODUIT, DELAI } = options(undefined, { jours: 90, delai: 60 });
 const log = creerJournal("reception-partielle", APPLIQUER);
-console.log(`Réception partielle — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"} — fenêtre ${JOURS} j${SEULE ? ` — commande ${SEULE}` : ""}${PRODUIT ? ` — produit ${PRODUIT}` : ""}`);
+console.log(`Réception partielle — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"} — fenêtre ${JOURS} j — délai ${DELAI > 0 ? `${DELAI} j` : "désactivé"}${SEULE ? ` — commande ${SEULE}` : ""}${PRODUIT ? ` — produit ${PRODUIT}` : ""}`);
 
 const commandes = await chargerCommandes(JOURS);
 console.log(`commandes confirmées lues : ${commandes.size} — ${resumeStatuts(commandes)}`);
@@ -39,13 +48,42 @@ console.log(`bons de commande : ${bons.bons.length} au total, ${bons.bonsOuverts
 const { infoProduit } = await chargerProduits(produitsDesCommandes(commandes), bons.fournisseurs);
 const E = ecritures({ APPLIQUER, log, bons });
 
-// ---------- 1. Lignes candidates : tracées sur un bon clos dans une commande ouverte ----------
 const ouvertes = [...commandes.values()].filter((o) => STATUTS_DEMANDE.has(o.order_status_id) && (!SEULE || o.order_id === SEULE));
+const estLiee = (l) => l.product_id && String(l.product_id) !== "0";
+
+// ---------- 0. Délai dépassé : lignes non couvertes des commandes confirmées depuis plus de DELAI jours ----------
+const limite = Math.floor(Date.now() / 1000) - DELAI * 86400;
+const retards = new Map(); // o → [{ o, l, manque }]
+const enRetard = new Set(); // "order_id:opid" : lignes soustraites au traitement des bons clos
+if (DELAI > 0) {
+  const parProduit = {}; // pid → [{ o, l, manque }] sur toutes les commandes ouvertes (hors En stock : tout couvert)
+  for (const o of ouvertes) {
+    if (o.order_status_id === ST.EN_STOCK) continue;
+    for (const l of o.products || []) if (estLiee(l) && (!PRODUIT || String(l.product_id) === PRODUIT)) (parProduit[l.product_id] ||= []).push({ o, l, manque: 0 });
+  }
+  for (const [pid, lignes] of Object.entries(parProduit)) {
+    const info = infoProduit(pid);
+    let reste = info ? Math.max(0, -info.stock) : Infinity; // produit introuvable : considéré manquant
+    lignes.sort((a, b) => b.o.date_confirmed - a.o.date_confirmed); // plus récentes d'abord : les anciennes sont servies en premier
+    for (const x of lignes) { if (reste <= 0) break; x.manque = Math.min(Number(x.l.quantity), reste); reste -= x.manque; }
+    for (const x of lignes) {
+      if (!(x.manque > 0) || Number(x.o.date_confirmed) > limite) continue;
+      const t = lireTrace(x.o).find((y) => y.opid === x.l.order_product_id);
+      if (t && (t.ann || t.fin)) continue; // déjà remboursée ou annulée
+      (retards.get(x.o) || retards.set(x.o, []).get(x.o)).push(x);
+      enRetard.add(`${x.o.order_id}:${x.l.order_product_id}`);
+    }
+  }
+  console.log(`\nlignes non reçues plus de ${DELAI} jours après la commande : ${enRetard.size} sur ${retards.size} commande(s)`);
+}
+
+// ---------- 1. Lignes candidates : tracées sur un bon clos dans une commande ouverte ----------
 const candidats = {}; // pid → [{ o, t, l, bon, manque }]
 for (const o of ouvertes) {
   for (const t of lireTrace(o)) {
     if (!(Number(t.qty) > 0) || t.ann || t.fin) continue;
     if (PRODUIT && String(t.pid) !== PRODUIT) continue;
+    if (enRetard.has(`${o.order_id}:${t.opid}`)) continue; // traitée par le délai dépassé
     const l = (o.products || []).find((x) => x.order_product_id === t.opid);
     if (!l) continue; // ligne disparue de la commande
     const bon = t.poid ? bons.parId[t.poid] : null;
@@ -75,12 +113,28 @@ for (const [pid, lignes] of Object.entries(candidats)) {
 console.log(`\nlignes en échec de réception : ${nbLignes}`);
 
 // ---------- 3. Traitement commande par commande ----------
-const parCommande = new Map();
-for (const lignes of Object.values(candidats)) for (const x of lignes) if (x.manque > 0) (parCommande.get(x.o) || parCommande.set(x.o, []).get(x.o)).push(x);
-for (const [o, lignes] of [...parCommande.entries()].sort((a, b) => a[0].date_confirmed - b[0].date_confirmed)) {
+const parCommande = new Map(); // o → { clos: [candidats en échec], retard: [lignes en délai dépassé] }
+const entree = (o) => parCommande.get(o) || parCommande.set(o, { clos: [], retard: [] }).get(o);
+for (const lignes of Object.values(candidats)) for (const x of lignes) if (x.manque > 0) entree(x.o).clos.push(x);
+for (const [o, lignes] of retards) entree(o).retard = lignes;
+for (const [o, { clos, retard }] of [...parCommande.entries()].sort((a, b) => a[0].date_confirmed - b[0].date_confirmed)) {
   log(`commande ${o.order_id} (${o.order_source}, ${dateCourte(o.date_confirmed)}, ${(o.products || []).length} ligne(s))`);
   const trace = lireTrace(o), alertes = [], echecs = [];
-  for (const x of lignes) {
+  const age = Math.floor((Date.now() / 1000 - Number(o.date_confirmed)) / 86400);
+  for (const x of retard) {
+    let t = trace.find((y) => y.opid === x.l.order_product_id);
+    if (!t) { t = { opid: x.l.order_product_id, pid: Number(x.l.product_id), ean: x.l.ean, sid: null, poid: null, qty: Number(x.l.quantity) }; trace.push(t); }
+    const info = infoProduit(x.l.product_id) || { sku: x.l.sku, ean: x.l.ean, supplier_id: t.sid, cout: x.l.price_brutto, supplier_code: "" };
+    const bon = t.poid ? bons.parId[t.poid] : null;
+    const etat = bon ? `${bons.nomBon(bon.id)} ${NOM_STATUT_BON[bon.status] || bon.status}` : "jamais commandé au fournisseur";
+    if (bon) { // brouillon → quantité retirée ; bon envoyé non clos → surplus signalé ; bon clos → rien
+      const alerte = await E.retirerDuBrouillon(bon.id, t.pid, Math.min(x.manque, Number(t.qty) || x.manque), info, `délai dépassé, commande ${o.order_id}`);
+      if (alerte) alertes.push(alerte); // « déjà commandé (bon envoyé) » = surplus à prévoir ; « retirer … à la main » = brouillon à corriger
+    }
+    echecs.push({ ligne: x.l, qte: x.manque, motif: `non reçu ${age} jours après la commande (${etat})`, t });
+    E.actions.retards = (E.actions.retards || 0) + 1;
+  }
+  for (const x of clos) {
     const t = trace.find((y) => y.opid === x.t.opid);
     const info = infoProduit(x.t.pid) || { sku: x.l.sku, ean: x.l.ean, supplier_id: x.t.sid, cout: x.l.price_brutto, supplier_code: "" };
     const etatBon = `${bons.nomBon(x.bon.id)} ${NOM_STATUT_BON[x.bon.status] || x.bon.status} le ${dateCourte(x.bon.date_completed || x.bon.date_received || x.bon.date_created)}`;

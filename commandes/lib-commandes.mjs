@@ -34,8 +34,8 @@ const dateLocale = (d = new Date()) => new Date(d.getTime() - d.getTimezoneOffse
 export const AUJOURDHUI = dateLocale();
 export const dateCourte = (ts) => new Date(Number(ts) * 1000).toISOString().slice(0, 10);
 
-/** Options de ligne de commande communes : --appliquer, --jours=N, --commande=ID, --rattrapage, --produit=ID. */
-export function options(argv = process.argv.slice(2), { jours = 90 } = {}) {
+/** Options de ligne de commande communes : --appliquer, --jours=N, --commande=ID, --rattrapage, --produit=ID, --delai=N. */
+export function options(argv = process.argv.slice(2), { jours = 90, delai = 60 } = {}) {
   const opt = (n) => { const a = argv.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
   return {
     APPLIQUER: argv.includes("--appliquer"),
@@ -43,6 +43,7 @@ export function options(argv = process.argv.slice(2), { jours = 90 } = {}) {
     SEULE: opt("commande") ? Number(opt("commande")) : null,
     PRODUIT: opt("produit") ? String(opt("produit")) : null,
     RATTRAPAGE: argv.includes("--rattrapage"),
+    DELAI: opt("delai") === null ? delai : Number(opt("delai")),
     opt,
   };
 }
