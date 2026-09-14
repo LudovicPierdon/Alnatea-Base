@@ -21,10 +21,10 @@
 //   5. Commande annulée après trace : retire la quantité du brouillon s'il l'est encore, sinon commente.
 //   Aucun changement de statut des commandes clients.
 //
-// Usage : node commandes/commande-fournisseur.mjs [--appliquer] [--jours=30] [--commande=ID] [--rattrapage]
+// Usage : node commandes/commande-fournisseur.mjs [--appliquer] [--jours=90] [--commande=ID] [--rattrapage]
 //   sans option     simulation : affiche ce qui serait fait, n'écrit rien dans Base
 //   --appliquer     écrit dans Base (bons de commande, trace 44156, commentaires)
-//   --jours=N       fenêtre de lecture des commandes clients (défaut 30 jours)
+//   --jours=N       fenêtre de lecture des commandes clients (défaut 90 jours, maximum de l'API : au-delà, une commande sans trace ou en attente ne serait plus vue)
 //   --commande=ID   ne traite que cette commande client
 //   --rattrapage    en plus : pour tout produit en déficit (toutes commandes ouvertes confondues, tracées ou non),
 //                   propose d'ajouter le manquant au brouillon du fournisseur (sans trace par commande)

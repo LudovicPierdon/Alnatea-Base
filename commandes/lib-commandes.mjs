@@ -35,7 +35,7 @@ export const AUJOURDHUI = dateLocale();
 export const dateCourte = (ts) => new Date(Number(ts) * 1000).toISOString().slice(0, 10);
 
 /** Options de ligne de commande communes : --appliquer, --jours=N, --commande=ID, --rattrapage, --produit=ID. */
-export function options(argv = process.argv.slice(2), { jours = 30 } = {}) {
+export function options(argv = process.argv.slice(2), { jours = 90 } = {}) {
   const opt = (n) => { const a = argv.find((x) => x.startsWith(`--${n}=`)); return a ? a.slice(n.length + 3) : null; };
   return {
     APPLIQUER: argv.includes("--appliquer"),

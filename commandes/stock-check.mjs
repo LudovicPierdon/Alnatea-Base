@@ -10,10 +10,10 @@
 // traitement (Nouvelles, Mis en expédier, En stock) ne sont jamais considérées comme manquantes.
 // Une commande contenant une ligne non liée au catalogue n'est pas déplacée (impossible de juger).
 //
-// Usage : node commandes/stock-check.mjs [--appliquer] [--jours=30] [--commande=ID]
+// Usage : node commandes/stock-check.mjs [--appliquer] [--jours=90] [--commande=ID]
 //   sans option     simulation : affiche les commandes qui passeraient en stock, n'écrit rien
 //   --appliquer     change réellement les statuts dans Base
-//   --jours=N       fenêtre de lecture des commandes clients (défaut 30 jours)
+//   --jours=N       fenêtre de lecture des commandes clients (défaut 90 jours, maximum de l'API)
 //   --commande=ID   ne traite que cette commande client
 // Journal : commandes/journal/stock-check-AAAA-MM.log
 import { ST, options, creerJournal, chargerCommandes, resumeStatuts, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
