@@ -3,14 +3,17 @@
 // est fait par stock-check.mjs, les échecs de réception par reception-partielle.mjs.
 //
 // Principe (process corrigé du 2026-09-11, décisions des 13 et 14/09/2026) :
-//   1. Prend les commandes clients confirmées au statut « Nouvelles commandes » sans trace « QT ajouté » (champ 44156).
+//   1. Prend les commandes clients confirmées, ouvertes (Nouvelles, Mis en expédier, En attente de réception, En stock)
+//      et sans trace « QT ajouté » (champ 44156) : une commande passée en attente de réception dès l'étiquette créée
+//      n'est donc jamais oubliée.
 //   2. Pour chaque ligne liée à un produit du catalogue : déficit = min(−stock, demande ouverte) − en attente,
 //      où stock = stock Base (déjà net des réservations : négatif = manquant), demande ouverte = somme des lignes des
 //      commandes ouvertes (Nouvelles, Mis en expédier, En attente de réception, En stock ; plafond contre les
 //      réservations fantômes) et en attente = quantités non reçues des bons de commande non clos.
 //      Quantité à commander = min(quantité de la ligne, déficit).
 //   3. Ajoute (ou augmente) la ligne dans le brouillon de bon de commande du fournisseur du produit, en le créant
-//      au besoin. L'API remplace une ligne existante du même produit : on renvoie donc ancienne + nouvelle quantité.
+//      au besoin. Si le manquant est déjà couvert par un bon ouvert du fournisseur (brouillon ou envoyé), la ligne
+//      est tracée sur ce bon sans rien ajouter, pour que reception-partielle.mjs puisse la suivre. L'API remplace une ligne existante du même produit : on renvoie donc ancienne + nouvelle quantité.
 //      Chaque commande client suit le cycle complet (décision du 14/09) : aucun produit n'est exclu d'office, même
 //      s'il a déjà manqué chez ce fournisseur.
 //   4. Trace EAN · quantité · bon de commande dans le champ 44156 (même format que l'ancien add-on), et signale
@@ -26,7 +29,7 @@
 //   --rattrapage    en plus : pour tout produit en déficit (toutes commandes ouvertes confondues, tracées ou non),
 //                   propose d'ajouter le manquant au brouillon du fournisseur (sans trace par commande)
 // Journal : commandes/journal/commande-fournisseur-AAAA-MM.log (une ligne par action, dates ISO).
-import { ST, options, creerJournal, lireTrace, chargerCommandes, resumeStatuts, demandeOuverte, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
+import { ST, STATUTS_DEMANDE, options, creerJournal, lireTrace, chargerCommandes, resumeStatuts, demandeOuverte, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
 
 const { APPLIQUER, JOURS, SEULE, RATTRAPAGE } = options();
 const log = creerJournal("commande-fournisseur", APPLIQUER);
@@ -45,9 +48,9 @@ const E = ecritures({ APPLIQUER, log, bons });
 
 // ---------- 2. Nouvelles commandes non tracées ----------
 const aTraiter = [...commandes.values()]
-  .filter((o) => o.order_status_id === ST.NOUVELLES && lireTrace(o).length === 0 && (!SEULE || o.order_id === SEULE))
+  .filter((o) => STATUTS_DEMANDE.has(o.order_status_id) && lireTrace(o).length === 0 && (!SEULE || o.order_id === SEULE))
   .sort((a, b) => a.date_confirmed - b.date_confirmed);
-console.log(`\nNouvelles commandes à traiter : ${aTraiter.length}`);
+console.log(`\nCommandes ouvertes sans trace à traiter : ${aTraiter.length}`);
 for (const o of aTraiter) {
   log(`commande ${o.order_id} (${o.order_source}, ${new Date(o.date_confirmed * 1000).toISOString().slice(0, 16)}) : ${(o.products || []).length} ligne(s)`);
   const trace = [], alertes = [];
@@ -58,7 +61,13 @@ for (const o of aTraiter) {
     if (!info) { alertes.push(`produit ${pid} introuvable dans le catalogue`); continue; }
     const qte = Math.min(Number(l.quantity), Math.max(0, deficit(pid, info)));
     const detail = detailProduit(pid, info);
-    if (qte <= 0) { log(`  = ${info.sku} x${l.quantity} : couvert — ${detail}`); trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: info.supplier_id, poid: null, qty: 0 }); continue; }
+    if (qte <= 0) {
+      // Couvert : par le stock, ou par un bon ouvert du fournisseur → on trace ce bon pour pouvoir suivre la réception.
+      const bonOuvert = bons.bonsOuverts.find((b) => String(b.supplier_id) === String(info.supplier_id) && (bons.lignesBon[b.id] || []).some((it) => String(it.product_id) === String(pid) && Number(it.quantity) > Number(it.completed_quantity || 0)));
+      log(`  = ${info.sku} x${l.quantity} : couvert${bonOuvert ? ` (déjà sur ${bons.nomBon(bonOuvert.id)})` : ""} — ${detail}`);
+      trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: info.supplier_id, poid: bonOuvert ? bonOuvert.id : null, qty: bonOuvert ? Number(l.quantity) : 0 });
+      continue;
+    }
     if (!info.supplier_id) { alertes.push(`${info.sku} x${qte} : aucun fournisseur, rien commandé`); trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: null, poid: null, qty: 0 }); continue; }
     const poid = await E.ajouterAuBrouillon(pid, info, qte, `commande ${o.order_id}, ${detail}`);
     trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: info.supplier_id, poid, qty: qte });
