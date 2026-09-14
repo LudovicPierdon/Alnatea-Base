@@ -5,11 +5,11 @@
 // (physique = stock + réservé). Un stock négatif est donc du manquant.
 //
 // Trace par commande client (champ commande 44156 « QT ajouté », JSON, même format que l'ancien add-on) :
-//   [{ opid, pid, ean, sid, poid, qty, try?, poid1?, ann?, nl?, fin?, rid? }]
+//   [{ opid, pid, ean, sid, poid, qty, try?, poid1?, ann?, fin?, rid? }]
 //   opid  : identifiant de la ligne de commande     pid : produit Base       sid : fournisseur
 //   poid  : bon de commande fournisseur courant     qty : quantité commandée au fournisseur pour cette ligne
 //   try   : tentative en cours (1 par défaut, 2 après un premier échec de réception)   poid1 : premier bon
-//   ann   : 1 si commande annulée déjà traitée      nl : 1 si produit jugé non livrable au moment de la commande
+//   ann   : 1 si commande annulée déjà traitée
 //   fin   : « rembourser » quand la ligne a été isolée pour remboursement   rid : commande de remboursement créée
 import { appendFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -25,8 +25,6 @@ export const CHAMP_TRACE = "44156", CHAMP_FOURNISSEUR_PRODUIT = "extra_field_126
 export const PO_CLOS = new Set([3, 4, 5]);
 export const NOM_STATUT_BON = { 0: "brouillon", 1: "envoyé", 2: "en réception", 3: "terminé", 4: "terminé partiellement", 5: "annulé", 6: "envoyé" };
 export const MAX_COMMENTAIRE = 200;
-/** Fenêtre (jours) pendant laquelle deux échecs de réception chez le même fournisseur rendent un produit « non livrable ». */
-export const JOURS_NON_LIVRABLE = 30;
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dateLocale = (d = new Date()) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
@@ -92,10 +90,10 @@ export function demandeOuverte(commandes) {
 }
 
 /**
- * Bons de commande fournisseur de l'entrepôt : liste complète, lignes des bons ouverts et des bons clos récents,
+ * Bons de commande fournisseur de l'entrepôt : liste complète (tous statuts), lignes des bons ouverts,
  * quantités en attente (commandées non reçues sur les bons ouverts), brouillon courant par fournisseur.
  */
-export async function chargerBons({ joursClos = 45 } = {}) {
+export async function chargerBons() {
   const bons = [];
   for (let page = 1; page < 50; page++) {
     const d = await bl("getInventoryPurchaseOrders", { warehouse_id: WH_ID, page }); // sans inventory_id (sinon liste vide)
@@ -105,10 +103,8 @@ export async function chargerBons({ joursClos = 45 } = {}) {
   }
   const parId = Object.fromEntries(bons.map((b) => [b.id, b]));
   const bonsOuverts = bons.filter((b) => !PO_CLOS.has(Number(b.status)));
-  const limite = Math.floor(Date.now() / 1000) - joursClos * 86400;
-  const bonsClosRecents = bons.filter((b) => PO_CLOS.has(Number(b.status)) && Number(b.date_completed || b.date_received || b.date_created) >= limite);
   const lignesBon = {};
-  for (const b of [...bonsOuverts, ...bonsClosRecents]) {
+  for (const b of bonsOuverts) {
     lignesBon[b.id] = (await bl("getInventoryPurchaseOrderItems", { order_id: b.id })).items || [];
     await sleep(100);
   }
@@ -122,16 +118,7 @@ export async function chargerBons({ joursClos = 45 } = {}) {
   const fournisseurs = Object.fromEntries(((await bl("getInventorySuppliers", {})).suppliers || []).map((s) => [s.supplier_id, s]));
   const nomBon = (id) => parId[id]?.document_number || parId[id]?.name || `bon ${id}`;
   const nomFournisseur = (sid) => fournisseurs[sid]?.name || `fournisseur ${sid}`;
-  /**
-   * Bons clos récents (fenêtre JOURS_NON_LIVRABLE) du fournisseur où le produit a manqué (quantité > reçue).
-   * Deux échecs ou plus = produit non livrable chez ce fournisseur pour l'instant.
-   */
-  const echecsRecents = (sid, pid) => {
-    const limiteNl = Math.floor(Date.now() / 1000) - JOURS_NON_LIVRABLE * 86400;
-    return bonsClosRecents.filter((b) => String(b.supplier_id) === String(sid) && Number(b.date_completed || b.date_received || b.date_created) >= limiteNl
-      && (lignesBon[b.id] || []).some((it) => String(it.product_id) === String(pid) && Number(it.quantity) > Number(it.completed_quantity || 0)));
-  };
-  return { bons, parId, bonsOuverts, bonsClosRecents, lignesBon, enAttente, brouillons, fournisseurs, nomBon, nomFournisseur, echecsRecents };
+  return { bons, parId, bonsOuverts, lignesBon, enAttente, brouillons, fournisseurs, nomBon, nomFournisseur };
 }
 
 /** Données produits (stock net, réservations, fournisseur principal, coût) pour un ensemble d'identifiants. */

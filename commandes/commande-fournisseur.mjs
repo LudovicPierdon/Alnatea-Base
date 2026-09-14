@@ -11,8 +11,8 @@
 //      Quantité à commander = min(quantité de la ligne, déficit).
 //   3. Ajoute (ou augmente) la ligne dans le brouillon de bon de commande du fournisseur du produit, en le créant
 //      au besoin. L'API remplace une ligne existante du même produit : on renvoie donc ancienne + nouvelle quantité.
-//      Produit « non livrable » (deux bons clos sans le livrer chez ce fournisseur en 30 jours) : rien n'est commandé,
-//      la ligne est tracée `nl:1` et reception-partielle.mjs l'isole pour remboursement.
+//      Chaque commande client suit le cycle complet (décision du 14/09) : aucun produit n'est exclu d'office, même
+//      s'il a déjà manqué chez ce fournisseur.
 //   4. Trace EAN · quantité · bon de commande dans le champ 44156 (même format que l'ancien add-on), et signale
 //      les cas à voir par un commentaire administrateur sur la commande client (seul canal de signalement).
 //   5. Commande annulée après trace : retire la quantité du brouillon s'il l'est encore, sinon commente.
@@ -60,12 +60,6 @@ for (const o of aTraiter) {
     const detail = detailProduit(pid, info);
     if (qte <= 0) { log(`  = ${info.sku} x${l.quantity} : couvert — ${detail}`); trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: info.supplier_id, poid: null, qty: 0 }); continue; }
     if (!info.supplier_id) { alertes.push(`${info.sku} x${qte} : aucun fournisseur, rien commandé`); trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: null, poid: null, qty: 0 }); continue; }
-    const echecs = bons.echecsRecents(info.supplier_id, pid);
-    if (echecs.length >= 2) {
-      alertes.push(`${info.sku} x${qte} : non livrable chez ${bons.nomFournisseur(info.supplier_id)} (manquant sur ${echecs.map((b) => bons.nomBon(b.id)).join(" et ")}), à rembourser`);
-      trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: info.supplier_id, poid: null, qty: qte, nl: 1 });
-      continue;
-    }
     const poid = await E.ajouterAuBrouillon(pid, info, qte, `commande ${o.order_id}, ${detail}`);
     trace.push({ opid: l.order_product_id, pid: Number(pid), ean: info.ean, sid: info.supplier_id, poid, qty: qte });
   }
@@ -101,7 +95,6 @@ if (RATTRAPAGE) {
     if (d <= 0) continue;
     n++;
     if (!info.supplier_id) { log(`  ? ${info.sku} ${info.ean} : déficit ${d}, aucun fournisseur`); continue; }
-    if (bons.echecsRecents(info.supplier_id, pid).length >= 2) { log(`  ? ${info.sku} ${info.ean} : déficit ${d}, non livrable chez ${bons.nomFournisseur(info.supplier_id)} (2 échecs récents)`); continue; }
     await E.ajouterAuBrouillon(pid, info, d, `rattrapage, ${detailProduit(pid, info)}`);
   }
   console.log(`rattrapage : ${n} produit(s) en déficit`);
