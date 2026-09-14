@@ -155,6 +155,17 @@ export function produitsDesCommandes(commandes) {
 /**
  * Écritures sur les bons de commande et les commandes clients. `ctx` = { APPLIQUER, log, bons (chargerBons), actions }.
  */
+/** Ligne de bon de commande à renvoyer à l'API : champs vides ou dates nulles omis (sinon ERROR_INVALID_DATE). */
+export const ligneBon = (it, quantity) => {
+  const out = { product_id: Number(it.product_id), quantity };
+  for (const k of ["item_cost", "supplier_code", "location", "batch", "expiry_date", "serial_no", "comments"]) {
+    const v = it[k];
+    if (v === undefined || v === null || v === "" || (typeof v === "string" && v.startsWith("0000"))) continue;
+    out[k] = v;
+  }
+  return out;
+};
+
 export function ecritures(ctx) {
   const { APPLIQUER, log, bons } = ctx;
   const actions = ctx.actions || (ctx.actions = {});
@@ -165,7 +176,16 @@ export function ecritures(ctx) {
     let bon = bons.brouillons[sid];
     if (!bon) {
       if (APPLIQUER) {
-        const r = await bl("addInventoryPurchaseOrder", { warehouse_id: WH_ID, supplier_id: sid, payer_id: -1, currency: DEVISE, name: "" });
+        // Payeur : le compte n'a aucun payeur (getInventoryPayers vide) et les bons créés dans le panneau portent -1,
+        // refusé par l'API (ERROR_PAYER_NOT_FOUND). On essaie sans payer_id, puis avec un payeur existant s'il y en a.
+        const candidats = [{}];
+        for (const p of (await bl("getInventoryPayers", {})).payers || []) candidats.push({ payer_id: p.payer_id ?? p.id });
+        let r = null, erreur = null;
+        for (const c of candidats) {
+          try { r = await bl("addInventoryPurchaseOrder", { warehouse_id: WH_ID, supplier_id: sid, currency: DEVISE, name: "", ...c }); break; }
+          catch (e) { erreur = e; }
+        }
+        if (!r) throw new Error(`impossible de créer un brouillon pour ${bons.nomFournisseur(sid)} : ${erreur?.message} — créer un payeur dans Base (Bons de commande → paramètres) ou le brouillon à la main`);
         bon = { id: r.order_id, supplier_id: sid, status: 0, document_number: r.document_number };
       } else bon = { id: `NOUVEAU-${sid}`, supplier_id: sid, status: 0, document_number: "(à créer)" };
       bons.brouillons[sid] = bon; bons.lignesBon[bon.id] = []; bons.parId[bon.id] = bon; compte("bonsCrees");
@@ -175,9 +195,7 @@ export function ecritures(ctx) {
     const ancienne = existante ? Number(existante.quantity) : 0;
     const nouvelleQte = ancienne + qte;
     // L'API remplace la ligne existante du même produit (elle n'additionne pas) : on renvoie ancienne + nouvelle.
-    const item = existante
-      ? { product_id: Number(pid), quantity: nouvelleQte, item_cost: existante.item_cost, supplier_code: existante.supplier_code, location: existante.location, batch: existante.batch, expiry_date: existante.expiry_date, serial_no: existante.serial_no, comments: existante.comments }
-      : { product_id: Number(pid), quantity: nouvelleQte, item_cost: info.cout, supplier_code: info.supplier_code };
+    const item = existante ? ligneBon(existante, nouvelleQte) : ligneBon({ product_id: pid, item_cost: info.cout, supplier_code: info.supplier_code }, nouvelleQte);
     if (APPLIQUER) await bl("addInventoryPurchaseOrderItems", { order_id: bon.id, items: [item] });
     if (existante) existante.quantity = nouvelleQte; else bons.lignesBon[bon.id].push({ ...item, completed_quantity: 0 });
     bons.enAttente[pid] = (bons.enAttente[pid] || 0) + qte;
@@ -195,7 +213,7 @@ export function ecritures(ctx) {
     if (!ligne) return `${info.sku} x${qte} absent du brouillon ${bons.nomBon(poid)}`;
     const nouvelle = Number(ligne.quantity) - Number(qte);
     if (nouvelle <= 0) return `retirer ${info.sku} du brouillon ${bons.nomBon(poid)} à la main (ligne à 0)`;
-    if (APPLIQUER) await bl("addInventoryPurchaseOrderItems", { order_id: poid, items: [{ product_id: Number(pid), quantity: nouvelle, item_cost: ligne.item_cost, supplier_code: ligne.supplier_code, location: ligne.location, batch: ligne.batch, expiry_date: ligne.expiry_date, serial_no: ligne.serial_no, comments: ligne.comments }] });
+    if (APPLIQUER) await bl("addInventoryPurchaseOrderItems", { order_id: poid, items: [ligneBon(ligne, nouvelle)] });
     log(`  - ${info.sku} : ligne ${ligne.quantity} → ${nouvelle} dans ${bons.nomBon(poid)} — ${origine}`);
     ligne.quantity = nouvelle; bons.enAttente[pid] = Math.max(0, (bons.enAttente[pid] || 0) - Number(qte));
     compte("retraits");

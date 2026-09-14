@@ -14,3 +14,5 @@
 !commandes/commande-fournisseur.mjs
 !commandes/stock-check.mjs
 !commandes/reception-partielle.mjs
+!commandes/recaler-brouillons.mjs
+!commandes/stock-physique-zero.mjs
