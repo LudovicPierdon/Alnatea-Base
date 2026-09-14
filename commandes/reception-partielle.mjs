@@ -14,10 +14,10 @@
 //         lignes supprimées / réduites dans la commande d'origine (réservation libérée), qui poursuit son flux
 //         avec ses lignes reçues ou encore attendues chez un autre fournisseur.
 //     Le remboursement lui-même se fait sur la marketplace (manuel), puis la commande de remboursement en « Annulées ».
-//   - Un bon annulé sans avoir été envoyé n'est pas un échec : la quantité est simplement remise sur le brouillon
-//     courant, sans compter de tentative. Même traitement pour un bon INTROUVABLE (brouillon supprimé du panneau,
-//     décision du 14/09) : si le produit est déjà couvert par un bon ouvert du fournisseur (par ex. recalage passé
-//     entre-temps), la ligne est seulement re-tracée sur ce bon, sans rien ajouter.
+//   - Un bon annulé sans avoir été envoyé, ou INTROUVABLE (brouillon supprimé du panneau), n'est pas un échec :
+//     si le produit est déjà couvert par un bon ouvert du fournisseur (fusion de bons, recalage passé entre-temps),
+//     la ligne est seulement re-tracée sur ce bon ; sinon la quantité est remise sur le brouillon courant, sans
+//     compter de tentative (décisions du 14/09).
 //   - Chaque commande client suit ce cycle complet : aucun produit n'est écarté d'office pour ses échecs passés.
 //   - Délai dépassé (décision du 2026-09-14) : une ligne d'une commande confirmée depuis plus de N jours (défaut 60,
 //     --delai=N, 0 = désactivé) et toujours non couverte par le stock est un échec définitif, quel que soit l'état de
@@ -98,7 +98,7 @@ for (const o of ouvertes) {
       continue;
     }
     if (!(bon && PO_CLOS.has(Number(bon.status)))) continue; // bon ouvert (en route) ou sans bon : rien à faire
-    t.sid = bon.supplier_id; // fournisseur = celui du bon tracé
+    t.sid = bon.supplier_id || infoProduit(t.pid)?.supplier_id || null; // fournisseur = celui du bon tracé
     (candidats[t.pid] ||= []).push({ o, t, l, bon, manque: 0, annuleSansEnvoi: Number(bon.status) === 5 && !Number(bon.date_sent) });
   }
 }
@@ -148,9 +148,10 @@ for (const [o, { clos, retard }] of [...parCommande.entries()].sort((a, b) => a[
     const t = trace.find((y) => y.opid === x.t.opid);
     const info = infoProduit(x.t.pid) || { sku: x.l.sku, ean: x.l.ean, supplier_id: x.t.sid, cout: x.l.price_brutto, supplier_code: "" };
     const etatBon = x.bon ? `${bons.nomBon(x.bon.id)} ${NOM_STATUT_BON[x.bon.status] || x.bon.status} le ${dateCourte(x.bon.date_completed || x.bon.date_received || x.bon.date_created)}` : `bon ${x.t.poid} introuvable (supprimé)`;
-    if (x.supprime) {
+    if (x.annuleSansEnvoi) { // bon annulé sans envoi ou introuvable (brouillon supprimé, fusion de bons)
       if (!x.t.sid) { alertes.push(`${info.sku} x${x.manque} : ${etatBon}, produit sans fournisseur, à recommander à la main`); E.actions.sansFournisseur = (E.actions.sansFournisseur || 0) + 1; continue; }
       // Déjà couvert par un bon ouvert du même fournisseur (stock net ≥ 0 une fois les bons ouverts comptés) ? → re-tracer seulement.
+      // C'est le cas après une fusion de bons : les lignes sont sur le bon fusionné, l'ancien est annulé ou supprimé.
       const stock = infoProduit(x.t.pid)?.stock;
       const couvert = stock !== undefined && Math.max(0, -stock) - (bons.enAttente[x.t.pid] || 0) <= 0;
       const bonOuvert = couvert ? bons.bonsOuverts.find((b) => String(b.supplier_id) === String(x.t.sid) && (bons.lignesBon[b.id] || []).some((it) => String(it.product_id) === String(x.t.pid) && Number(it.quantity) > Number(it.completed_quantity || 0))) : null;
@@ -159,13 +160,8 @@ for (const [o, { clos, retard }] of [...parCommande.entries()].sort((a, b) => a[
         Object.assign(t, { poid: bonOuvert.id, qty: x.manque }); E.actions.retraces = (E.actions.retraces || 0) + 1;
         continue;
       }
-      const poid = await E.ajouterAuBrouillon(x.t.pid, info, x.manque, `${etatBon}, commande ${o.order_id}`, x.t.sid);
-      Object.assign(t, { poid, qty: x.manque }); E.actions.bonsSupprimes = (E.actions.bonsSupprimes || 0) + 1;
-      continue;
-    }
-    if (x.annuleSansEnvoi) {
-      const poid = await E.ajouterAuBrouillon(x.t.pid, info, x.manque, `bon ${etatBon} (jamais envoyé), commande ${o.order_id}`, x.t.sid);
-      Object.assign(t, { poid, qty: x.manque });
+      const poid = await E.ajouterAuBrouillon(x.t.pid, info, x.manque, `${etatBon}${x.supprime ? "" : " (jamais envoyé)"}, commande ${o.order_id}`, x.t.sid);
+      Object.assign(t, { poid, qty: x.manque }); E.actions[x.supprime ? "bonsSupprimes" : "bonsAnnules"] = (E.actions[x.supprime ? "bonsSupprimes" : "bonsAnnules"] || 0) + 1;
       continue;
     }
     const tentative = Number(t.try || 1);
