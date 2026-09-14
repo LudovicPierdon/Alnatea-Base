@@ -16,7 +16,7 @@ on:
         required: false
         default: ""
 
-# Un seul script Base à la fois (même groupe pour les trois workflows) : pas d'écritures concurrentes.
+# Un seul script Base à la fois (même groupe pour commande-fournisseur et reception-partielle ; le stock check a le sien) : pas d'écritures concurrentes.
 concurrency:
   group: scripts-base
   cancel-in-progress: false

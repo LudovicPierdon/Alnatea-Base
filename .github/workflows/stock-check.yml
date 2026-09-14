@@ -1,5 +1,6 @@
 # Stock check — exécution planifiée sur les serveurs GitHub (PC éteint ou non).
-# Toutes les 30 minutes : node commandes/stock-check.mjs <arguments>.
+# Toutes les 5 minutes (minimum GitHub, démarrage souvent retardé de quelques minutes) : node commandes/stock-check.mjs <arguments>.
+# Décision du 2026-09-14 : cadence rapprochée pour préparer les commandes juste après une réception.
 # Les arguments planifiés viennent de la variable de dépôt ARGUMENTS_STOCK_CHECK (Settings → Secrets and variables →
 # Actions → Variables) : vide = simulation, « --appliquer » = écriture dans Base. Le jeton BASELINKER_TOKEN est un
 # secret de dépôt (même page, onglet Secrets) : il n'apparaît jamais dans les journaux.
@@ -8,7 +9,7 @@ name: Stock check
 
 on:
   schedule:
-    - cron: "15,45 * * * *"
+    - cron: "2-59/5 * * * *"
   workflow_dispatch:
     inputs:
       arguments:
@@ -16,9 +17,11 @@ on:
         required: false
         default: ""
 
-# Un seul script Base à la fois (même groupe pour les trois workflows) : pas d'écritures concurrentes.
+# Groupe propre : le stock check ne fait que passer des commandes couvertes en « En stock » (setOrderStatus), sans
+# conflit possible avec les deux autres scripts (trace, brouillons, remboursements). Rester dans le groupe commun
+# ferait annuler leurs exécutions en attente par les passages fréquents du stock check.
 concurrency:
-  group: scripts-base
+  group: stock-check
   cancel-in-progress: false
 
 jobs:
