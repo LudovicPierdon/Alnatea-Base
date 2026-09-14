@@ -4,13 +4,16 @@
 // Sémantique du stock dans ce compte : la valeur `stock` renvoyée par l'API est déjà nette des réservations
 // (physique = stock + réservé). Un stock négatif est donc du manquant.
 //
-// Trace par commande client (champ commande 44156 « QT ajouté », JSON, même format que l'ancien add-on) :
-//   [{ opid, pid, ean, sid, poid, qty, try?, poid1?, ann?, fin?, rid? }]
-//   opid  : identifiant de la ligne de commande     pid : produit Base       sid : fournisseur
-//   poid  : bon de commande fournisseur courant     qty : quantité commandée au fournisseur pour cette ligne
-//   try   : tentative en cours (1 par défaut, 2 après un premier échec de réception)   poid1 : premier bon
-//   ann   : 1 si commande annulée déjà traitée
-//   fin   : « rembourser » quand la ligne a été isolée pour remboursement   rid : commande de remboursement créée
+// Trace par commande client (champ commande 44156 « QT ajouté », texte limité à 200 caractères par Base).
+// En mémoire : [{ opid, pid, ean, sid, poid, qty, try?, ann?, fin? }]
+//   opid  : identifiant de la ligne de commande     pid / ean : produit (relus sur la ligne de commande)
+//   sid   : fournisseur (relu sur le bon)            poid : bon de commande fournisseur courant
+//   qty   : quantité commandée au fournisseur pour cette ligne
+//   try   : 2 après un premier échec de réception   ann : 1 si annulation déjà traitée   fin : « rembourser »
+// Dans le champ : format compact « ~opid.poid.qty[flags];+delta.poid.qty… » (nombres en base 36, opid en delta
+// par rapport à la ligne précédente, flags : 2 = 2e tentative, a = annulation traitée, r = remboursement) ;
+// ~14 caractères par ligne, donc 14 lignes possibles. L'ancien format JSON de l'add-on (« [{"opid":…}] ») est
+// encore lu ; il dépassait 200 caractères dès 3 lignes et était alors tronqué (illisible).
 import { appendFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { bl } from "../lib/baselinker.mjs";
@@ -55,7 +58,46 @@ export function creerJournal(nom, APPLIQUER) {
   };
 }
 
-export const lireTrace = (o) => { try { const t = JSON.parse((o.custom_extra_fields || {})[CHAMP_TRACE] || "[]"); return Array.isArray(t) ? t : []; } catch { return []; } };
+const b36 = (n) => Number(n).toString(36);
+const deB36 = (s) => parseInt(s, 36);
+/** Encode la trace au format compact (voir en-tête). Les champs pid/ean/sid ne sont pas stockés (relus). */
+export function encoderTrace(entries) {
+  let prec = 0;
+  return "~" + entries.map((t) => {
+    const opid = Number(t.opid);
+    const part = prec ? `+${b36(opid - prec)}` : b36(opid);
+    prec = opid;
+    const flags = `${Number(t.try) >= 2 ? "2" : ""}${t.ann ? "a" : ""}${t.fin ? "r" : ""}`;
+    return `${part}.${t.poid ? b36(t.poid) : ""}.${b36(t.qty || 0)}${flags}`;
+  }).join(";");
+}
+/** Lit la trace d'une commande (format compact ou ancien JSON). Renvoie [] si absente ou illisible. */
+export function lireTrace(o) {
+  const brut = (o.custom_extra_fields || {})[CHAMP_TRACE] || "";
+  if (!brut.startsWith("~")) { try { const t = JSON.parse(brut || "[]"); return Array.isArray(t) ? t : []; } catch { return []; } }
+  const lignes = Object.fromEntries((o.products || []).map((l) => [String(l.order_product_id), l]));
+  const out = []; let prec = 0;
+  for (const e of brut.slice(1).split(";").filter(Boolean)) {
+    const m = /^(\+?)([0-9a-z]+)\.([0-9a-z]*)\.([0-9a-z]+?)([2ar]*)$/.exec(e);
+    if (!m) continue;
+    const opid = m[1] ? prec + deB36(m[2]) : deB36(m[2]);
+    prec = opid;
+    const l = lignes[String(opid)];
+    const t = { opid, pid: l ? Number(l.product_id) : null, ean: l?.ean || "", sid: null, poid: m[3] ? deB36(m[3]) : null, qty: deB36(m[4]) };
+    if (m[5].includes("2")) t.try = 2;
+    if (m[5].includes("a")) t.ann = 1;
+    if (m[5].includes("r")) t.fin = "rembourser";
+    out.push(t);
+  }
+  return out;
+}
+/** Vrai si la commande porte une trace lisible (même vide : « ~ » ou « [] » = traitée, rien à commander). */
+export function estTracee(o) {
+  const brut = (o.custom_extra_fields || {})[CHAMP_TRACE] || "";
+  if (!brut) return false;
+  if (brut.startsWith("~")) return true;
+  try { return Array.isArray(JSON.parse(brut)); } catch { return false; }
+}
 
 /** Commandes clients confirmées des N derniers jours (dédoublonnées par order_id, statut lu sur chaque commande). */
 export async function chargerCommandes(jours) {
@@ -222,7 +264,12 @@ export function ecritures(ctx) {
 
   /** Écrit la trace et, s'il y a des alertes, un commentaire administrateur daté sur la commande client. */
   async function ecrireCommande(o, trace, alertes, prefixe = "Cde fournisseur") {
-    const champs = { order_id: o.order_id, custom_extra_fields: { [CHAMP_TRACE]: JSON.stringify(trace) } };
+    let texteTrace = encoderTrace(trace);
+    if (texteTrace.length > 200) { // au-delà de la limite du champ : on abandonne les lignes sans bon ni marqueur
+      texteTrace = encoderTrace(trace.filter((t) => t.poid || t.try || t.ann || t.fin));
+      if (texteTrace.length > 200) alertes = [...alertes, `trace trop longue (${texteTrace.length} car.), tronquée`];
+    }
+    const champs = { order_id: o.order_id, custom_extra_fields: { [CHAMP_TRACE]: texteTrace.slice(0, 200) } };
     if (alertes.length) {
       const ajout = `[${prefixe} ${AUJOURDHUI}] ${alertes.join(" ; ")}`;
       const ancien = (o.admin_comments || "").trim();

@@ -7,7 +7,7 @@
 //     encore attendues sur les bons ouverts. Le manquant est attribué aux commandes les plus récentes d'abord
 //     (les plus anciennes sont servies en premier).
 //   - Premier échec : la quantité manquante est remise UNE fois sur le brouillon suivant du même fournisseur
-//     (trace `try: 2`, `poid1` = premier bon), commentaire sur la commande client.
+//     (trace `try: 2`), commentaire sur la commande client.
 //   - Second échec : la ligne est isolée pour remboursement :
 //       · toutes les lignes de la commande en échec → la commande passe en « A rembourser » ;
 //       · sinon → commande de remboursement créée en « A rembourser » (port 0, lignes non liées au catalogue),
@@ -50,6 +50,7 @@ for (const o of ouvertes) {
     if (!l) continue; // ligne disparue de la commande
     const bon = t.poid ? bons.parId[t.poid] : null;
     if (!(bon && PO_CLOS.has(Number(bon.status)))) continue; // bon ouvert (en route) ou sans bon : rien à faire
+    t.sid = bon.supplier_id; // fournisseur = celui du bon tracé
     (candidats[t.pid] ||= []).push({ o, t, l, bon, manque: 0, annuleSansEnvoi: Number(bon.status) === 5 && !Number(bon.date_sent) });
   }
 }
@@ -91,17 +92,17 @@ for (const [o, lignes] of [...parCommande.entries()].sort((a, b) => a[0].date_co
     const tentative = Number(t.try || 1);
     if (tentative < 2) {
       const poid = await E.ajouterAuBrouillon(x.t.pid, info, x.manque, `1er échec : ${etatBon}, commande ${o.order_id}`, x.t.sid);
-      Object.assign(t, { poid, qty: x.manque, try: 2, poid1: x.t.poid });
+      Object.assign(t, { poid, qty: x.manque, try: 2 });
       alertes.push(`${info.sku} x${x.manque} non livré (${etatBon}), recommandé une fois sur ${bons.nomBon(poid)}`);
       E.actions.premiersEchecs = (E.actions.premiersEchecs || 0) + 1;
       continue;
     }
-    const motif = `non livré 2 fois par ${bons.nomFournisseur(x.t.sid)} (${bons.nomBon(x.t.poid1)}, ${etatBon})`;
+    const motif = `non livré 2 fois par ${bons.nomFournisseur(x.t.sid)} (dernier bon : ${etatBon})`;
     echecs.push({ ligne: x.l, qte: x.manque, motif, t });
   }
   if (echecs.length) {
     const r = await E.isolerPourRemboursement(o, echecs);
-    for (const e of echecs) Object.assign(e.t, { fin: "rembourser", rid: r.rid });
+    for (const e of echecs) Object.assign(e.t, { fin: "rembourser" });
     alertes.push(`${echecs.map((e) => `${e.ligne.sku} x${e.qte} ${e.motif}`).join(" ; ")} → ${r.commentaire}`);
   }
   await E.ecrireCommande(o, trace, alertes, "Réception");
