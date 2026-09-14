@@ -38,12 +38,14 @@
 //   --produit=ID    ne traite que ce produit Base
 //   --simuler-bon-supprime=ID  test en simulation seulement : fait comme si ce bon n'existait plus
 // Journal : commandes/journal/reception-partielle-AAAA-MM.log
-import { ST, NOM_STATUT_BON, STATUTS_DEMANDE, PO_CLOS, options, creerJournal, lireTrace, chargerCommandes, resumeStatuts, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan, dateCourte } from "./lib-commandes.mjs";
+import { ST, NOM_STATUT_BON, STATUTS_DEMANDE, PO_CLOS, options, creerJournal, detecterChampsTrace, lireTrace, chargerCommandes, resumeStatuts, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan, dateCourte } from "./lib-commandes.mjs";
 
 const { APPLIQUER, JOURS, SEULE, PRODUIT, DELAI, opt } = options(undefined, { jours: 90, delai: 60 });
 const SIMULE_SUPPRIME = opt("simuler-bon-supprime");
 if (SIMULE_SUPPRIME && APPLIQUER) { console.error("--simuler-bon-supprime est réservé à la simulation"); process.exit(2); }
 const log = creerJournal("reception-partielle", APPLIQUER);
+const CHAMPS = await detecterChampsTrace();
+if (CHAMPS.length > 1) console.log(`trace « QT ajouté » : ${CHAMPS.length} champs (débordement ${CHAMPS.slice(1).join(", ")})`);
 console.log(`Réception partielle — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"} — fenêtre ${JOURS} j — délai ${DELAI > 0 ? `${DELAI} j` : "désactivé"}${SEULE ? ` — commande ${SEULE}` : ""}${PRODUIT ? ` — produit ${PRODUIT}` : ""}`);
 
 const commandes = await chargerCommandes(JOURS);

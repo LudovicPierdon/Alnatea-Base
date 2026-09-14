@@ -29,10 +29,12 @@
 //   --rattrapage    en plus : pour tout produit en déficit (toutes commandes ouvertes confondues, tracées ou non),
 //                   propose d'ajouter le manquant au brouillon du fournisseur (sans trace par commande)
 // Journal : commandes/journal/commande-fournisseur-AAAA-MM.log (une ligne par action, dates ISO).
-import { ST, STATUTS_DEMANDE, options, creerJournal, lireTrace, estTracee, chargerCommandes, resumeStatuts, demandeOuverte, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
+import { ST, STATUTS_DEMANDE, options, creerJournal, detecterChampsTrace, lireTrace, estTracee, chargerCommandes, resumeStatuts, demandeOuverte, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
 
 const { APPLIQUER, JOURS, SEULE, RATTRAPAGE } = options();
 const log = creerJournal("commande-fournisseur", APPLIQUER);
+const CHAMPS = await detecterChampsTrace();
+if (CHAMPS.length > 1) console.log(`trace « QT ajouté » : ${CHAMPS.length} champs (débordement ${CHAMPS.slice(1).join(", ")})`);
 console.log(`Commande fournisseur — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"} — fenêtre ${JOURS} j${SEULE ? ` — commande ${SEULE}` : ""}${RATTRAPAGE ? " — rattrapage" : ""}`);
 
 // ---------- 1. Données ----------

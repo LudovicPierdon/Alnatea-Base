@@ -4,7 +4,8 @@
 // Sémantique du stock dans ce compte : la valeur `stock` renvoyée par l'API est déjà nette des réservations
 // (physique = stock + réservé). Un stock négatif est donc du manquant.
 //
-// Trace par commande client (champ commande 44156 « QT ajouté », texte limité à 200 caractères par Base).
+// Trace par commande client (champ commande 44156 « QT ajouté », texte limité à 200 caractères par Base ; débordement
+// automatique sur les champs « QT ajouté 2 », « QT ajouté 3 »… s'ils existent dans Base, voir detecterChampsTrace).
 // En mémoire : [{ opid, pid, ean, sid, poid, qty, try?, ann?, fin? }]
 //   opid  : identifiant de la ligne de commande     pid / ean : produit (relus sur la ligne de commande)
 //   sid   : fournisseur (relu sur le bon)            poid : bon de commande fournisseur courant
@@ -24,6 +25,37 @@ export const NOM_STATUT = { 141531: "Nouvelles commandes", 141532: "Mis en expé
 /** Statuts dont les lignes constituent la demande ouverte (réservations légitimes). */
 export const STATUTS_DEMANDE = new Set([ST.NOUVELLES, ST.EXPEDIER, ST.ATTENTE, ST.EN_STOCK]);
 export const CHAMP_TRACE = "44156", CHAMP_FOURNISSEUR_PRODUIT = "extra_field_12633";
+/** Taille maximale d'un champ personnalisé texte de commande dans Base. */
+export const TAILLE_CHAMP = 200;
+/**
+ * Champs porteurs de la trace, dans l'ordre : « QT ajouté » (44156) puis les champs de débordement « QT ajouté 2 »,
+ * « QT ajouté 3 »… si Ludovic les a créés dans Base (Paramètres → Commandes → champs supplémentaires, type texte).
+ * Rempli par detecterChampsTrace() au démarrage des scripts ; sans débordement, la capacité est de 200 caractères.
+ */
+export let CHAMPS_TRACE = [CHAMP_TRACE];
+export async function detecterChampsTrace() {
+  const r = await bl("getOrderExtraFields", {});
+  const suite = (r.extra_fields || [])
+    .filter((f) => /^QT ajout[ée] (\d+)$/i.test(String(f.name).trim()) && f.editor_type === "text")
+    .sort((a, b) => Number(a.name.match(/(\d+)$/)[1]) - Number(b.name.match(/(\d+)$/)[1]))
+    .map((f) => String(f.extra_field_id));
+  CHAMPS_TRACE = [CHAMP_TRACE, ...suite];
+  return CHAMPS_TRACE;
+}
+/** Texte complet de la trace d'une commande : concaténation des champs porteurs (les suites commencent par « ; »). */
+const brutTrace = (o) => { const c = o.custom_extra_fields || {}; return CHAMPS_TRACE.map((id) => String(c[id] ?? "").trim()).join(""); };
+/** Découpe la trace en morceaux ≤ TAILLE_CHAMP, coupés juste avant un « ; » pour que la concaténation restitue le texte. */
+export function decouperTrace(texte) {
+  const morceaux = [];
+  let reste = texte;
+  while (reste.length > TAILLE_CHAMP) {
+    let coupe = reste.lastIndexOf(";", TAILLE_CHAMP);
+    if (coupe <= 0) coupe = TAILLE_CHAMP; // entrée plus longue qu'un champ : impossible en pratique, coupe brute
+    morceaux.push(reste.slice(0, coupe)); reste = reste.slice(coupe);
+  }
+  morceaux.push(reste);
+  return morceaux;
+}
 /** Statuts de bon de commande clos : 3 terminé, 4 terminé partiellement, 5 annulé (0 brouillon, 1/6 envoyé, 2 en réception = ouverts). */
 export const PO_CLOS = new Set([3, 4, 5]);
 export const NOM_STATUT_BON = { 0: "brouillon", 1: "envoyé", 2: "en réception", 3: "terminé", 4: "terminé partiellement", 5: "annulé", 6: "envoyé" };
@@ -74,7 +106,7 @@ export function encoderTrace(entries) {
 }
 /** Lit la trace d'une commande (format compact ou ancien JSON). Renvoie [] si absente ou illisible. */
 export function lireTrace(o) {
-  const brut = (o.custom_extra_fields || {})[CHAMP_TRACE] || "";
+  const brut = brutTrace(o);
   if (!brut.startsWith("~")) { try { const t = JSON.parse(brut || "[]"); return Array.isArray(t) ? t : []; } catch { return []; } }
   const lignes = Object.fromEntries((o.products || []).map((l) => [String(l.order_product_id), l]));
   const out = []; let prec = 0;
@@ -94,7 +126,7 @@ export function lireTrace(o) {
 }
 /** Vrai si la commande porte une trace lisible (même vide : « ~ » ou « [] » = traitée, rien à commander). */
 export function estTracee(o) {
-  const brut = (o.custom_extra_fields || {})[CHAMP_TRACE] || "";
+  const brut = brutTrace(o);
   if (!brut) return false;
   if (brut.startsWith("~")) return true;
   try { return Array.isArray(JSON.parse(brut)); } catch { return false; }
@@ -266,11 +298,13 @@ export function ecritures(ctx) {
   /** Écrit la trace et, s'il y a des alertes, un commentaire administrateur daté sur la commande client. */
   async function ecrireCommande(o, trace, alertes, prefixe = "Cde fournisseur") {
     let texteTrace = encoderTrace(trace);
-    if (texteTrace.length > 200) { // au-delà de la limite du champ : on abandonne les lignes sans bon ni marqueur
+    const capacite = TAILLE_CHAMP * CHAMPS_TRACE.length;
+    if (texteTrace.length > capacite) { // au-delà de la capacité des champs : on abandonne les lignes sans bon ni marqueur
       texteTrace = encoderTrace(trace.filter((t) => t.poid || t.try || t.ann || t.fin));
-      if (texteTrace.length > 200) alertes = [...alertes, `trace trop longue (${texteTrace.length} car.), tronquée`];
+      if (texteTrace.length > capacite) alertes = [...alertes, `trace trop longue (${texteTrace.length} car. pour ${capacite}), tronquée : créer un champ « QT ajouté ${CHAMPS_TRACE.length + 1} » dans Base`];
     }
-    const champs = { order_id: o.order_id, custom_extra_fields: { [CHAMP_TRACE]: texteTrace.slice(0, 200) } };
+    const morceaux = decouperTrace(texteTrace).slice(0, CHAMPS_TRACE.length);
+    const champs = { order_id: o.order_id, custom_extra_fields: Object.fromEntries(CHAMPS_TRACE.map((id, i) => [id, (morceaux[i] || "").slice(0, TAILLE_CHAMP)])) };
     if (alertes.length) {
       const ajout = `[${prefixe} ${AUJOURDHUI}] ${alertes.join(" ; ")}`;
       const ancien = (o.admin_comments || "").trim();
@@ -280,7 +314,7 @@ export function ecritures(ctx) {
       compte("alertes", alertes.length);
       log(`  ! commande ${o.order_id} : ${ajout}`);
     }
-    o.custom_extra_fields = { ...(o.custom_extra_fields || {}), [CHAMP_TRACE]: champs.custom_extra_fields[CHAMP_TRACE] };
+    o.custom_extra_fields = { ...(o.custom_extra_fields || {}), ...champs.custom_extra_fields };
     if (APPLIQUER) await bl("setOrderFields", champs);
   }
 

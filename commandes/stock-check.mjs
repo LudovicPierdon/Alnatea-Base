@@ -16,10 +16,12 @@
 //   --jours=N       fenêtre de lecture des commandes clients (défaut 90 jours, maximum de l'API)
 //   --commande=ID   ne traite que cette commande client
 // Journal : commandes/journal/stock-check-AAAA-MM.log
-import { ST, options, creerJournal, chargerCommandes, resumeStatuts, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
+import { ST, options, creerJournal, detecterChampsTrace, chargerCommandes, resumeStatuts, chargerProduits, produitsDesCommandes, ecritures, bilan } from "./lib-commandes.mjs";
 
 const { APPLIQUER, JOURS, SEULE } = options();
 const log = creerJournal("stock-check", APPLIQUER);
+const CHAMPS = await detecterChampsTrace();
+if (CHAMPS.length > 1) console.log(`trace « QT ajouté » : ${CHAMPS.length} champs (débordement ${CHAMPS.slice(1).join(", ")})`);
 console.log(`Stock check — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"} — fenêtre ${JOURS} j${SEULE ? ` — commande ${SEULE}` : ""}`);
 
 const commandes = await chargerCommandes(JOURS);
