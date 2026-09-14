@@ -15,7 +15,9 @@
 //         avec ses lignes reçues ou encore attendues chez un autre fournisseur.
 //     Le remboursement lui-même se fait sur la marketplace (manuel), puis la commande de remboursement en « Annulées ».
 //   - Un bon annulé sans avoir été envoyé n'est pas un échec : la quantité est simplement remise sur le brouillon
-//     courant, sans compter de tentative.
+//     courant, sans compter de tentative. Même traitement pour un bon INTROUVABLE (brouillon supprimé du panneau,
+//     décision du 14/09) : si le produit est déjà couvert par un bon ouvert du fournisseur (par ex. recalage passé
+//     entre-temps), la ligne est seulement re-tracée sur ce bon, sans rien ajouter.
 //   - Chaque commande client suit ce cycle complet : aucun produit n'est écarté d'office pour ses échecs passés.
 //   - Délai dépassé (décision du 2026-09-14) : une ligne d'une commande confirmée depuis plus de N jours (défaut 60,
 //     --delai=N, 0 = désactivé) et toujours non couverte par le stock est un échec définitif, quel que soit l'état de
@@ -34,10 +36,13 @@
 //   --delai=N       délai (jours depuis la confirmation) au-delà duquel une ligne non reçue est remboursée (défaut 60, 0 = jamais)
 //   --commande=ID   ne traite que cette commande client
 //   --produit=ID    ne traite que ce produit Base
+//   --simuler-bon-supprime=ID  test en simulation seulement : fait comme si ce bon n'existait plus
 // Journal : commandes/journal/reception-partielle-AAAA-MM.log
 import { ST, NOM_STATUT_BON, STATUTS_DEMANDE, PO_CLOS, options, creerJournal, lireTrace, chargerCommandes, resumeStatuts, chargerBons, chargerProduits, produitsDesCommandes, ecritures, bilan, dateCourte } from "./lib-commandes.mjs";
 
-const { APPLIQUER, JOURS, SEULE, PRODUIT, DELAI } = options(undefined, { jours: 90, delai: 60 });
+const { APPLIQUER, JOURS, SEULE, PRODUIT, DELAI, opt } = options(undefined, { jours: 90, delai: 60 });
+const SIMULE_SUPPRIME = opt("simuler-bon-supprime");
+if (SIMULE_SUPPRIME && APPLIQUER) { console.error("--simuler-bon-supprime est réservé à la simulation"); process.exit(2); }
 const log = creerJournal("reception-partielle", APPLIQUER);
 console.log(`Réception partielle — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"} — fenêtre ${JOURS} j — délai ${DELAI > 0 ? `${DELAI} j` : "désactivé"}${SEULE ? ` — commande ${SEULE}` : ""}${PRODUIT ? ` — produit ${PRODUIT}` : ""}`);
 
@@ -86,7 +91,12 @@ for (const o of ouvertes) {
     if (enRetard.has(`${o.order_id}:${t.opid}`)) continue; // traitée par le délai dépassé
     const l = (o.products || []).find((x) => x.order_product_id === t.opid);
     if (!l) continue; // ligne disparue de la commande
-    const bon = t.poid ? bons.parId[t.poid] : null;
+    const bon = t.poid && String(t.poid) !== SIMULE_SUPPRIME ? bons.parId[t.poid] : null;
+    if (t.poid && !bon) { // bon supprimé du panneau : ligne à remettre, sans compter d'échec
+      t.sid = infoProduit(t.pid)?.supplier_id || null;
+      (candidats[t.pid] ||= []).push({ o, t, l, bon: null, manque: 0, annuleSansEnvoi: true, supprime: true });
+      continue;
+    }
     if (!(bon && PO_CLOS.has(Number(bon.status)))) continue; // bon ouvert (en route) ou sans bon : rien à faire
     t.sid = bon.supplier_id; // fournisseur = celui du bon tracé
     (candidats[t.pid] ||= []).push({ o, t, l, bon, manque: 0, annuleSansEnvoi: Number(bon.status) === 5 && !Number(bon.date_sent) });
@@ -137,7 +147,22 @@ for (const [o, { clos, retard }] of [...parCommande.entries()].sort((a, b) => a[
   for (const x of clos) {
     const t = trace.find((y) => y.opid === x.t.opid);
     const info = infoProduit(x.t.pid) || { sku: x.l.sku, ean: x.l.ean, supplier_id: x.t.sid, cout: x.l.price_brutto, supplier_code: "" };
-    const etatBon = `${bons.nomBon(x.bon.id)} ${NOM_STATUT_BON[x.bon.status] || x.bon.status} le ${dateCourte(x.bon.date_completed || x.bon.date_received || x.bon.date_created)}`;
+    const etatBon = x.bon ? `${bons.nomBon(x.bon.id)} ${NOM_STATUT_BON[x.bon.status] || x.bon.status} le ${dateCourte(x.bon.date_completed || x.bon.date_received || x.bon.date_created)}` : `bon ${x.t.poid} introuvable (supprimé)`;
+    if (x.supprime) {
+      if (!x.t.sid) { alertes.push(`${info.sku} x${x.manque} : ${etatBon}, produit sans fournisseur, à recommander à la main`); E.actions.sansFournisseur = (E.actions.sansFournisseur || 0) + 1; continue; }
+      // Déjà couvert par un bon ouvert du même fournisseur (stock net ≥ 0 une fois les bons ouverts comptés) ? → re-tracer seulement.
+      const stock = infoProduit(x.t.pid)?.stock;
+      const couvert = stock !== undefined && Math.max(0, -stock) - (bons.enAttente[x.t.pid] || 0) <= 0;
+      const bonOuvert = couvert ? bons.bonsOuverts.find((b) => String(b.supplier_id) === String(x.t.sid) && (bons.lignesBon[b.id] || []).some((it) => String(it.product_id) === String(x.t.pid) && Number(it.quantity) > Number(it.completed_quantity || 0))) : null;
+      if (bonOuvert) {
+        log(`  = ${info.sku} x${x.manque} : ${etatBon}, déjà couvert par ${bons.nomBon(bonOuvert.id)} — re-tracé, commande ${o.order_id}`);
+        Object.assign(t, { poid: bonOuvert.id, qty: x.manque }); E.actions.retraces = (E.actions.retraces || 0) + 1;
+        continue;
+      }
+      const poid = await E.ajouterAuBrouillon(x.t.pid, info, x.manque, `${etatBon}, commande ${o.order_id}`, x.t.sid);
+      Object.assign(t, { poid, qty: x.manque }); E.actions.bonsSupprimes = (E.actions.bonsSupprimes || 0) + 1;
+      continue;
+    }
     if (x.annuleSansEnvoi) {
       const poid = await E.ajouterAuBrouillon(x.t.pid, info, x.manque, `bon ${etatBon} (jamais envoyé), commande ${o.order_id}`, x.t.sid);
       Object.assign(t, { poid, qty: x.manque });
