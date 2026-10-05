@@ -24,7 +24,7 @@ export const ST = { NOUVELLES: 141531, EXPEDIER: 141532, ATTENTE: 146725, EN_STO
 export const NOM_STATUT = { 141531: "Nouvelles commandes", 141532: "Mis en expédier", 146725: "En attente de réception", 146726: "En stock", 141533: "Envoyé", 142067: "Envoi partiel", 150724: "A rembourser", 141534: "Annulées" };
 /** Statuts dont les lignes constituent la demande ouverte (réservations légitimes). */
 export const STATUTS_DEMANDE = new Set([ST.NOUVELLES, ST.EXPEDIER, ST.ATTENTE, ST.EN_STOCK]);
-export const CHAMP_TRACE = "44156", CHAMP_FOURNISSEUR_PRODUIT = "extra_field_12633";
+export const CHAMP_TRACE = "44156"; // le fournisseur d'un produit est lu dans l'onglet Fournisseurs (suppliers), les champs extra « Fournisseur (1)/(2) » ont été supprimés de Base le 2026-09-16
 /** Taille maximale d'un champ personnalisé texte de commande dans Base. */
 export const TAILLE_CHAMP = 200;
 /**
@@ -132,6 +132,22 @@ export function estTracee(o) {
   try { return Array.isArray(JSON.parse(brut)); } catch { return false; }
 }
 
+/**
+ * Variantes (regroupement du 2026-09-25) : une ligne de commande sur une variante porte product_id = la fiche mère
+ * « FAM-… » (sans fournisseur, stock agrégé) et variant_id = la variante, qui a son propre stock, ses réservations,
+ * son fournisseur et ses lignes de bon de commande. On ramène product_id sur la variante (mère gardée dans
+ * produit_mere) pour que tous les scripts commandent, suivent et servent le bon produit.
+ */
+export function normaliserVariantes(o) {
+  for (const l of o.products || []) {
+    if (l.variant_id && String(l.variant_id) !== "0" && String(l.variant_id) !== String(l.product_id)) {
+      l.produit_mere = l.product_id;
+      l.product_id = String(l.variant_id);
+    }
+  }
+  return o;
+}
+
 /** Commandes clients confirmées des N derniers jours (dédoublonnées par order_id, statut lu sur chaque commande). */
 export async function chargerCommandes(jours) {
   const commandes = new Map();
@@ -140,7 +156,7 @@ export async function chargerCommandes(jours) {
     const d = await bl("getOrders", { date_confirmed_from: depuis, include_custom_extra_fields: true });
     const os = d.orders || [];
     let nouveaux = 0;
-    for (const o of os) if (!commandes.has(o.order_id)) { commandes.set(o.order_id, o); nouveaux++; }
+    for (const o of os) if (!commandes.has(o.order_id)) { commandes.set(o.order_id, normaliserVariantes(o)); nouveaux++; }
     if (os.length < 100 || nouveaux === 0) break;
     depuis = Math.max(...os.map((o) => o.date_confirmed));
     await sleep(200);
@@ -197,8 +213,7 @@ export async function chargerBons() {
 }
 
 /** Données produits (stock net, réservations, fournisseur principal, coût) pour un ensemble d'identifiants. */
-export async function chargerProduits(ids, fournisseurs) {
-  const fournisseurParNom = Object.fromEntries(Object.values(fournisseurs).map((s) => [s.name.trim().toLowerCase(), s.supplier_id]));
+export async function chargerProduits(ids) {
   const produits = {};
   const liste = [...new Set([...ids].map(String))];
   for (let i = 0; i < liste.length; i += 1000) {
@@ -209,8 +224,7 @@ export async function chargerProduits(ids, fournisseurs) {
     const p = produits[pid];
     if (!p) return null;
     const four = (p.suppliers || [])[0];
-    const nomExtra = ((p.text_fields || {})[CHAMP_FOURNISSEUR_PRODUIT] || "").trim().toLowerCase();
-    const supplier_id = four?.id || fournisseurParNom[nomExtra] || null;
+    const supplier_id = four?.id || null;
     return {
       sku: p.sku, ean: p.ean, nom: (p.text_fields || {}).name || "",
       stock: Number((p.stock || {})[WH] ?? 0), reserveBase: Number((p.reservations || {})[WH] ?? 0),
