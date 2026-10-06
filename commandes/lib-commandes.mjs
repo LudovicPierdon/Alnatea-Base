@@ -58,6 +58,12 @@ export function decouperTrace(texte) {
 }
 /** Statuts de bon de commande clos : 3 terminé, 4 terminé partiellement, 5 annulé (0 brouillon, 1/6 envoyé, 2 en réception = ouverts). */
 export const PO_CLOS = new Set([3, 4, 5]);
+/**
+ * Lignes de bons envoyés que le fournisseur ne livrera pas et que l'API ne sait pas supprimer : ignorées partout
+ * (ni « en attente », ni bon ouvert du produit). À réceptionner à 0 dans le panneau ; l'entrée devient inutile une fois le bon clos.
+ * 2026-10-06 : Roll'On Après Piqûres (327542563) et Spray Habitat (327542558) repassés de DP Nature (#359030) à Mousti'Care (#361217).
+ */
+export const LIGNES_IGNOREES = { 359030: new Set(["327542563", "327542558"]) };
 export const NOM_STATUT_BON = { 0: "brouillon", 1: "envoyé", 2: "en réception", 3: "terminé", 4: "terminé partiellement", 5: "annulé", 6: "envoyé" };
 export const MAX_COMMENTAIRE = 200;
 
@@ -196,7 +202,8 @@ export async function chargerBons() {
   const bonsOuverts = bons.filter((b) => !PO_CLOS.has(Number(b.status)));
   const lignesBon = {};
   for (const b of bonsOuverts) {
-    lignesBon[b.id] = (await bl("getInventoryPurchaseOrderItems", { order_id: b.id })).items || [];
+    const ignorees = LIGNES_IGNOREES[b.id];
+    lignesBon[b.id] = ((await bl("getInventoryPurchaseOrderItems", { order_id: b.id })).items || []).filter((it) => !ignorees?.has(String(it.product_id)));
     await sleep(100);
   }
   const enAttente = {};
