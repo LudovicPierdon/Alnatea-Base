@@ -1,4 +1,9 @@
-// Remet le stock PHYSIQUE à zéro pour tous les produits du catalogue (flux tendu : rien n'est en entrepôt).
+// Remet le stock PHYSIQUE à zéro pour tous les produits du catalogue.
+// OUTIL PONCTUEL du 2026-09-14 (remise à plat initiale, « aucun produit en stock »). Règle actuelle : Ludovic a du
+// stock réel (entrées en stock par document depuis le 16/09, réceptions, « j'ai quelques stocks en vrai » le 06/10) :
+// une remise à zéro globale l'effacerait. Pour un stock fantôme d'un produit, utiliser sortie-stock.mjs.
+// L'écriture sur tout le catalogue exige donc --tout-le-catalogue en plus de --appliquer (alignement du 2026-10-08) ;
+// ne la lancer que sur demande explicite de Ludovic.
 // Dans ce compte, l'API renvoie un stock net des réservations (physique = stock + réservé) : la cible est donc
 // stock = −réservé pour chaque produit dont stock + réservé ≠ 0.
 // Le contrôle strict des documents de stock doit être DÉSACTIVÉ le temps de l'opération (l'API est bloquée sinon).
@@ -6,14 +11,20 @@
 // Étape de test obligatoire : le premier produit écrit est relu pour déterminer si l'API interprète la valeur
 // envoyée comme le physique ou comme le net ; le script s'arrête si le résultat n'est pas celui attendu.
 //
-// Usage : node commandes/stock-physique-zero.mjs [--appliquer] [--produit=ID]
+// Usage : node commandes/stock-physique-zero.mjs [--appliquer] [--produit=ID] [--tout-le-catalogue]
 //   sans option     simulation : liste les produits à corriger, n'écrit rien
 //   --appliquer     écrit dans Base (test sur un produit, puis lots de 1000)
 //   --produit=ID    ne traite que ce produit (utile pour le test)
+//   --tout-le-catalogue  obligatoire avec --appliquer sans --produit (garde-fou : efface tout le stock physique)
 import { bl } from "../lib/baselinker.mjs";
 import { INV, WH, options, creerJournal, sleep } from "./lib-commandes.mjs";
 
 const { APPLIQUER, PRODUIT } = options();
+if (APPLIQUER && !PRODUIT && !process.argv.includes("--tout-le-catalogue")) {
+  console.error("Refus : --appliquer sans --produit efface le stock physique de tout le catalogue (stock réel de Ludovic compris).\n" +
+    "Pour un produit : --produit=ID ; pour un stock fantôme : sortie-stock.mjs ; remise à zéro globale : ajouter --tout-le-catalogue (sur demande de Ludovic).");
+  process.exit(2);
+}
 const log = creerJournal("stock-physique-zero", APPLIQUER);
 console.log(`Stock physique à zéro — ${APPLIQUER ? "ÉCRITURE DANS BASE" : "simulation (rien n'est écrit)"}${PRODUIT ? ` — produit ${PRODUIT}` : ""}`);
 
