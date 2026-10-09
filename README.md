@@ -23,4 +23,4 @@ a désormais du stock réel : l'écriture sur tout le catalogue exige `--tout-le
 `commandes/lib-commandes.mjs` : lecture des commandes, bons de commande, produits, trace, écritures communes.
 `lib/baselinker.mjs`, `lib/env.mjs` : accès à l'API Base. En local, le jeton vient du fichier `acces\.env` du dossier projet.
 
-Ce dépôt est une vue partielle du dossier `Mon Drive\Société\Alnatea\Claude\Site Shopify` (voir `.gitignore`).
+Ce dépôt est une vue partielle du dossier `Mon Drive\Société\Alnatea\Claude\Outils` (voir `.gitignore`).
